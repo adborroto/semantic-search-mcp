@@ -1,0 +1,49 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please don't attach your index or `config.json`** — both can contain content and
+        paths from private repositories. A redacted snippet is fine.
+
+        Security issues should go through
+        [private reporting](https://github.com/adborroto/semantic-search-mcp/security/advisories/new)
+        instead of a public issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. semantic-search add ...
+        2. semantic-search index
+        3. semantic-search search "..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: "Output of `semantic-search config` and `node --version`, plus your OS."
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `semantic-search --version`"
+    validations:
+      required: true

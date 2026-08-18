@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest a capability or change
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [Out of scope](https://github.com/adborroto/semantic-search-mcp#out-of-scope-by-design)
+        first — answer generation, model-based reranking, a web UI, and million-scale corpora are
+        excluded deliberately rather than by omission.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you're in, not just the feature you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+    validations:
+      required: false

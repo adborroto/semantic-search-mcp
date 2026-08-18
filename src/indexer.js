@@ -1,0 +1,275 @@
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { config } from './config.js';
+import { loadIgnore } from './ignoreRules.js';
+import { createStore } from './store/vectorStore.js';
+import { extractByExtension } from './extractors/index.js';
+import { chunkText } from './chunker.js';
+import { embed, getTokenizer } from './embeddings.js';
+
+const TTY = process.stdout.isTTY;
+const C = {
+  reset:  TTY ? '\x1b[0m' : '',
+  bold:   TTY ? '\x1b[1m' : '',
+  dim:    TTY ? '\x1b[2m' : '',
+  green:  TTY ? '\x1b[32m' : '',
+  yellow: TTY ? '\x1b[33m' : '',
+  red:    TTY ? '\x1b[31m' : '',
+  cyan:   TTY ? '\x1b[36m' : '',
+  gray:   TTY ? '\x1b[90m' : '',
+};
+
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let _spinIdx = 0;
+let _hasStatus = false;
+
+function status(done, total, indexed, chunks, elapsed, currentFile) {
+  if (!TTY) return;
+  const spin = SPINNER[_spinIdx++ % SPINNER.length];
+  const rate = elapsed > 0.1 ? (done / elapsed).toFixed(1) : '–';
+  const progress = total > 0 ? `${done}/${total}` : String(done);
+  const filePart = currentFile ? `  ${C.dim}→ ${currentFile.length > 50 ? '…' + currentFile.slice(-49) : currentFile}${C.reset}` : '';
+  process.stdout.write(
+    `\r\x1b[2K${C.gray}  ${spin}  ${progress} · ${indexed} indexed · ${chunks} chunks · ${rate}/s${C.reset}${filePart}`,
+  );
+  _hasStatus = true;
+}
+
+function clearStatus() {
+  if (!TTY || !_hasStatus) return;
+  process.stdout.write('\r\x1b[2K');
+  _hasStatus = false;
+}
+
+function print(line) {
+  clearStatus();
+  console.log(line);
+}
+
+class Mutex {
+  #q = Promise.resolve();
+  run(fn) { return (this.#q = this.#q.then(fn, fn)); }
+}
+
+/** Recursively walk `dir`, pruning ignored directories, yielding candidate file paths. */
+async function* walk(root, dir, ig) {
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const abs = path.join(dir, entry.name);
+    const rel = path.relative(root, abs);
+    const relForIgnore = entry.isDirectory() ? `${rel}/` : rel;
+    if (ig.ignores(relForIgnore)) continue;
+
+    if (entry.isDirectory()) {
+      yield* walk(root, abs, ig);
+    } else if (entry.isFile()) {
+      const ext = path.extname(entry.name).toLowerCase();
+      if (config.extractableExtensions.includes(ext)) {
+        yield abs;
+      }
+    }
+  }
+}
+
+function hashBuffer(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+/**
+ * @param {{root?: string, force?: boolean, maxFiles?: number, concurrency?: number, verbose?: boolean}} [opts]
+ * @returns {Promise<{filesProcessed:number, filesSkipped:number, filesDeleted:number, chunksWritten:number, truncated:boolean}>}
+ */
+export async function runIndex({
+  root = config.defaultRoot,
+  force = false,
+  maxFiles = null,
+  concurrency = config.concurrency ?? 4,
+  verbose = false,
+} = {}) {
+  if (!root) {
+    throw new Error(
+      'No root directory to index. Pass one explicitly (`semantic-search index <path>`) ' +
+        `or set "defaultRoots" in ${config.configPath} (run \`semantic-search init\` to create it).`,
+    );
+  }
+  const store = await createStore();
+  const ig = loadIgnore(root);
+  // Tokenizer loaded lazily — if nothing needs indexing, model never loads
+  let _tokenizerPromise = null;
+  const lazyTokenizer = () => { _tokenizerPromise ??= getTokenizer(); return _tokenizerPromise; };
+  const writeMutex = new Mutex();
+
+  let filesProcessed = 0;
+  let filesSkipped = 0;
+  let filesDeleted = 0;
+  let chunksWritten = 0;
+  let filesDone = 0;
+  let truncated = false;
+  let currentFile = '';
+  const onDisk = new Set();
+  const t0 = Date.now();
+
+  // Collect all candidate paths + load freshness in bulk (1 DB query vs N per-file lookups)
+  if (TTY) process.stdout.write(`\r\x1b[2K${C.gray}  ⠋  walking…${C.reset}`);
+  const allFiles = [];
+  for await (const filePath of walk(root, root, ig)) {
+    allFiles.push(filePath);
+    onDisk.add(filePath);
+  }
+  if (TTY) process.stdout.write(`\r\x1b[2K${C.gray}  ⠋  loading index…${C.reset}`);
+  const freshnessMap = force ? new Map() : await store.getAllFreshness();
+  if (TTY) process.stdout.write('\r\x1b[2K');
+
+  // maxFiles bounds process memory for large corpora: this process embeds a
+  // long-running ONNX/transformers.js session whose native memory footprint
+  // was observed to climb steadily over ~1000+ files in a single process
+  // (enough, in one case, to trigger the kernel OOM killer). Stopping after a
+  // fixed number of *newly processed* files and letting the caller relaunch a
+  // fresh process is a robust cap regardless of the exact source of growth —
+  // incremental skip-by-mtime/hash makes each relaunch cheap for prior work.
+  // NOTE: when truncated, the stale-entry cleanup below is skipped, because
+  // `onDisk` only reflects the portion of the tree actually walked so far —
+  // treating it as complete would wrongly delete not-yet-visited files.
+  async function processFile(filePath) {
+    if (truncated) return;
+    if (maxFiles !== null && filesProcessed >= maxFiles) {
+      truncated = true;
+      return;
+    }
+
+    const rel = path.relative(root, filePath);
+    const elapsed = () => (Date.now() - t0) / 1000;
+    currentFile = rel;
+    if (verbose) process.stderr.write(`processing: ${rel}\n`);
+
+    const stat = await fsp.stat(filePath);
+
+    if (stat.size > config.maxFileSizeBytes) {
+      filesSkipped++;
+      filesDone++;
+      print(`  ${C.yellow}⊘${C.reset} ${C.dim}too large${C.reset}  ${C.gray}${rel}${C.reset}`);
+      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+      return;
+    }
+
+    const existing = freshnessMap.get(filePath);
+
+    if (existing && existing.mtimeMs === stat.mtimeMs) {
+      filesSkipped++;
+      filesDone++;
+      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+      return;
+    }
+
+    let buffer;
+    try {
+      buffer = await fsp.readFile(filePath);
+    } catch (err) {
+      filesDone++;
+      print(`  ${C.red}✗${C.reset} ${C.dim}read error${C.reset}  ${C.gray}${rel}${C.reset}  ${C.dim}${err.message}${C.reset}`);
+      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+      return;
+    }
+    const contentHash = hashBuffer(buffer);
+
+    if (existing && existing.contentHash === contentHash) {
+      filesSkipped++;
+      filesDone++;
+      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+      return;
+    }
+
+    let text;
+    try {
+      text = await extractByExtension(filePath);
+    } catch (err) {
+      filesDone++;
+      print(`  ${C.red}✗${C.reset} ${C.dim}extract error${C.reset}  ${C.gray}${rel}${C.reset}  ${C.dim}${err.message}${C.reset}`);
+      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+      return;
+    }
+    if (!text || text.trim().length === 0) {
+      filesSkipped++;
+      filesDone++;
+      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+      return;
+    }
+
+    const chunks = await chunkText(text, await lazyTokenizer(), config.chunk);
+    if (chunks.length === 0) {
+      filesSkipped++;
+      filesDone++;
+      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+      return;
+    }
+
+    const vectors = await embed(chunks.map((c) => c.text));
+    const records = chunks.map((c, i) => ({
+      id: `${filePath}::${c.chunkIndex}`,
+      vector: vectors[i],
+      text: c.text,
+      filePath,
+      offset: c.offset,
+      startLine: c.startLine,
+      mtimeMs: stat.mtimeMs,
+      contentHash,
+      chunkIndex: c.chunkIndex,
+    }));
+
+    await writeMutex.run(async () => {
+      await store.deleteByFilePath(filePath);
+      await store.upsertChunks(records);
+    });
+    chunksWritten += records.length;
+    filesProcessed++;
+    filesDone++;
+    print(`  ${C.green}↺${C.reset} ${C.bold}indexed${C.reset}   ${rel}  ${C.dim}(${records.length} chunks)${C.reset}`);
+    status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+  }
+
+  // Bounded concurrency pool: N workers share the file list via atomic index
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(concurrency, allFiles.length || 1) }, async () => {
+    while (true) {
+      const i = idx++;
+      if (i >= allFiles.length || truncated) break;
+      await processFile(allFiles[i]);
+    }
+  });
+  await Promise.all(workers);
+
+  // Only clean up entries that fall under THIS root — entries indexed from a
+  // different root (e.g. another repo indexed in a separate run) are out of
+  // scope for this walk and must not be treated as "deleted". Skipped
+  // entirely on a truncated (maxFiles-limited) run — see note above.
+  if (!truncated) {
+    const rootPrefix = path.resolve(root) + path.sep;
+    const indexed = await store.listIndexedFilePaths();
+    for (const indexedPath of indexed) {
+      if (!indexedPath.startsWith(rootPrefix)) continue;
+      if (!onDisk.has(indexedPath)) {
+        await store.deleteByFilePath(indexedPath);
+        filesDeleted++;
+        const rel = path.relative(root, indexedPath);
+        print(`  ${C.red}✂${C.reset} ${C.dim}deleted${C.reset}   ${C.gray}${rel}${C.reset}`);
+      }
+    }
+  }
+
+  clearStatus();
+  const elapsed = (Date.now() - t0) / 1000;
+  const rate = elapsed > 0.1 ? (filesDone / elapsed).toFixed(1) : '–';
+  const parts = [
+    filesProcessed > 0 ? `${C.green}${C.bold}${filesProcessed} indexed${C.reset}` : `${C.dim}0 indexed${C.reset}`,
+    `${C.dim}${filesSkipped} skipped${C.reset}`,
+    filesDeleted > 0 ? `${C.red}${filesDeleted} deleted${C.reset}` : null,
+    chunksWritten > 0 ? `${C.cyan}${chunksWritten} chunks${C.reset}` : null,
+    `${C.dim}${elapsed.toFixed(1)}s${C.reset}`,
+    `${C.dim}(${rate}/s)${C.reset}`,
+  ].filter(Boolean).join('  ');
+  console.log(`  ${parts}`);
+
+  await store.close();
+  return { filesProcessed, filesSkipped, filesDeleted, chunksWritten, truncated };
+}

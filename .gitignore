@@ -1,0 +1,42 @@
+node_modules/
+
+# Local index + downloaded model. These live under ~/.local/share/semantic-search
+# by default; this entry only catches a legacy in-repo .data/ from older versions.
+# The index contains VERBATIM TEXT of everything you indexed — never commit it.
+.data/
+
+# Host-specific config (your paths, your corpus). Ship config.example.json instead.
+config.json
+
+# A developer's own root-level ignore file. Leading slash on purpose: only the one
+# at the repo root, so test fixtures can commit their own .indexignore files.
+/.indexignore
+
+# Agent/editor local state
+.claude/
+.vscode/
+.idea/
+
+# Secrets — none of these should ever be committed
+.env
+.env.*
+*.pem
+*.key
+*.p12
+credentials.json
+
+# Index/database artifacts this tool produces
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.faiss
+
+# Build/test/publish output
+dist/
+build/
+coverage/
+*.tgz
+
+*.log
+.DS_Store

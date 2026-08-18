@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both platforms matter: the dependency tree carries native binaries
+        # (LanceDB, onnxruntime) that are resolved per-platform.
+        os: [ubuntu-latest, macos-latest]
+        node: ['22', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # The end-to-end test downloads the embedding model once; cache it so
+      # only the first run on a given node/os pays for it.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/semantic-search-test-model
+          key: model-${{ matrix.os }}-all-MiniLM-L6-v2
+
+      - name: Test
+        run: npm test
+        env:
+          SS_MODEL_CACHE_DIR: ~/.cache/semantic-search-test-model
+
+  package:
+    name: verify published tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      # Guards against shipping local state or secrets in the package. The
+      # published tarball must contain source and docs, nothing else.
+      - name: Inspect tarball contents
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e "
+            const files = require('./pack.json')[0].files.map(f => f.path);
+            console.log(files.join('\n'));
+            const forbidden = files.filter(f =>
+              f.startsWith('.data/') ||
+              f === 'config.json' ||
+              f.startsWith('.claude/') ||
+              f.startsWith('test/') ||
+              /\.(env|pem|key|sqlite|db)$/.test(f)
+            );
+            if (forbidden.length) {
+              console.error('\nForbidden files in tarball:\n' + forbidden.join('\n'));
+              process.exit(1);
+            }
+          "

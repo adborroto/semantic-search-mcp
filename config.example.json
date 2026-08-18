@@ -1,0 +1,12 @@
+{
+  "defaultRoots": [
+    "/absolute/path/to/first/folder",
+    "/absolute/path/to/second/folder"
+  ],
+  "storeBackend": "lancedb",
+  "defaultTopK": 5,
+  "chunk": {
+    "targetTokens": 200,
+    "overlapTokens": 35
+  }
+}

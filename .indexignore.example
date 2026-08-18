@@ -1,0 +1,60 @@
+node_modules/
+.git/
+.worktrees/
+worktrees/
+dist/
+build/
+coverage/
+*.lock
+vendor/
+.next/
+__pycache__/
+.data/
+*.d.ts
+static_generator/
+# ── iOS ───────────────────────────────────────────────────────────
+ios/
+Pods/
+.build/
+DerivedData/
+*.xcworkspace/
+*.ipa
+*.dSYM/
+
+# ── Android ───────────────────────────────────────────────────────
+android/
+.gradle/
+*.apk
+*.aab
+
+# ── Kotlin / JVM compiled output ──────────────────────────────────
+out/
+target/
+.kotlin/
+kotlin-js-store/
+
+# ── Flutter (generated / compiled) ────────────────────────────────
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.g.dart
+*.freezed.dart
+*.gr.dart
+*.gen.dart
+*.mocks.dart
+ios/Flutter/
+android/.gradle/
+android/build/
+
+# ── Ruby (generated only) ─────────────────────────────────────────
+tmp/
+log/
+public/assets/
+public/packs/
+public/packs-test/
+storage/
+.bundle/
+*.rbc
+*.gem
+spec/reports/
+test/reports/

@@ -1,0 +1,48 @@
+name: Publish
+
+# Publishes to npm when a GitHub Release is created, so the `npx` path stays
+# current without manual publishes. Requires an NPM_TOKEN repository secret with
+# publish rights to the @adborroto scope.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # enables npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm test
+        env:
+          SS_MODEL_CACHE_DIR: ~/.cache/semantic-search-test-model
+
+      # Fail loudly rather than publishing a version that doesn't match the tag.
+      - name: Check package version matches the release tag
+        if: github.event_name == 'release'
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          tag="${{ github.event.release.tag_name }}"
+          if [ "$pkg" != "$tag" ]; then
+            echo "package.json is $pkg but the release tag is $tag" >&2
+            exit 1
+          fi
+
+      - run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

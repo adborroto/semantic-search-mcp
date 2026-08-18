@@ -1,0 +1,4 @@
+{
+  "_comment": "Fixture for the ignore-rules test. This file is excluded by the corpus .indexignore, so the marker phrase below must never appear in search results.",
+  "marker": "excluded-fixture-marker-must-not-be-indexed"
+}
