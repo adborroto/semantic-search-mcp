@@ -15,6 +15,10 @@ permissions:
 jobs:
   codeql:
     name: CodeQL
+    # Dependabot PRs run with a read-only GITHUB_TOKEN no matter what `permissions:`
+    # asks for, so uploading results would always fail. The push-to-main run covers
+    # the same commits after merge.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,8 +54,9 @@ jobs:
 
   dependency-review:
     name: Dependency review
-    # Only meaningful on a PR — it diffs the manifest against the base branch.
-    if: github.event_name == 'pull_request'
+    # Only meaningful on a PR (it diffs the manifest against the base branch), and
+    # only available on public repos unless the org pays for Advanced Security.
+    if: github.event_name == 'pull_request' && !github.event.repository.private
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,15 +73,27 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # gitleaks needs history to scan past commits
 
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Run the scanner directly rather than via the action: the action tries to
+      # annotate the PR, which needs a write token it won't have on Dependabot PRs
+      # (and which a secret scanner has no need for). A non-zero exit still fails
+      # the job, so detection is unaffected.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VERSION=8.24.3
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan full history
+        run: gitleaks detect --source . --redact --verbose --exit-code 1
 
   leak-check:
     name: No private data in tarball
