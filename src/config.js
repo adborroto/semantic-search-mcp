@@ -49,6 +49,12 @@ const defaults = {
   // is silently ignored and you get fp32, so keep this as `dtype`.
   modelDtype: 'q8',
   vectorDim: 384, // confirmed via smoke test — must match the embedding model's real output size
+  // Texts handed to the model per forward pass. Embedding a whole file's chunks in one
+  // call makes the peak allocation scale with file size (a 500KB file yields hundreds of
+  // chunks), and ONNX sizes its internal buffers for the largest batch it has ever seen —
+  // so a single big file permanently raises the process's memory floor. A fixed batch
+  // makes the peak constant regardless of file size or corpus size.
+  embedBatchSize: 16,
   chunk: {
     targetTokens: 200,
     overlapTokens: 35,

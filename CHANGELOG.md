@@ -4,7 +4,25 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — Unreleased
+## [0.2.1] — 2026-08-18
+
+### Fixed
+- **Indexing no longer grows the process's memory floor with every file.** Two causes, both in
+  the embedding path. First, a whole file's chunks went into a single forward pass, so the peak
+  allocation scaled with file size — a 500KB file yields hundreds of chunks, and with
+  `concurrency: 4` four of those peaks landed at once. Embedding now runs in fixed batches
+  (`embedBatchSize`, default 16), making the peak constant regardless of file or corpus size.
+  Second, ONNX's CPU memory arena keeps every block it ever allocates and never returns it to
+  the OS, so RSS ratcheted up to the largest inference of the run and stayed there — the growth
+  that made long runs reach the kernel OOM killer. The arena is now disabled
+  (`enableCpuMemArena: false`), trading a small per-call allocation cost for memory that is
+  actually released between files.
+  - Note: vectors now depend slightly on batch composition (padding plus int8 dynamic
+    quantization). The same text embedded alone versus in a batch differs by cos ≈ 0.99, which
+    does not disturb ranking but means indexes written before and after this change are not
+    bit-identical. Set `embedBatchSize: 1` to recover the old numerics at the cost of speed.
+
+## [0.2.0] — 2026-08-18
 
 ### Changed
 - **BREAKING: `list_repos` is now `list_folders`, and `grep`'s `repo` parameter is now
