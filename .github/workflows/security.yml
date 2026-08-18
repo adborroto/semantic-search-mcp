@@ -15,10 +15,13 @@ permissions:
 jobs:
   codeql:
     name: CodeQL
-    # Dependabot PRs run with a read-only GITHUB_TOKEN no matter what `permissions:`
-    # asks for, so uploading results would always fail. The push-to-main run covers
-    # the same commits after merge.
-    if: github.actor != 'dependabot[bot]'
+    # Two things gate this, and both are about the environment rather than the code:
+    #   - Uploading results needs code scanning, which on PRIVATE repos requires paid
+    #     GitHub Advanced Security. It is free on public repos, so this activates
+    #     automatically the moment the repo is made public.
+    #   - Dependabot PRs get a read-only GITHUB_TOKEN regardless of `permissions:`,
+    #     so the upload would fail there too; the push-to-main run covers those commits.
+    if: ${{ !github.event.repository.private && github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
