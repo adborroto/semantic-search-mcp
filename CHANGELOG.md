@@ -4,7 +4,28 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — Unreleased
+## [0.2.0] — Unreleased
+
+### Changed
+- **BREAKING: `list_repos` is now `list_folders`, and `grep`'s `repo` parameter is now
+  `folder`.** The tool indexes arbitrary directories — nothing requires a git repo — so "repos"
+  misdescribed what it does and implied git awareness that does not exist. The CLI already said
+  "folders" (`add`, `list`), while the MCP layer said "repos"; `list_repos`'s own description
+  hedged with "repos/folders". MCP clients calling `list_repos` or passing `repo` must update.
+  No alias is kept.
+- Result headers and messages now say "folder" throughout. The display prefix in `gather`/`grep`
+  output is unchanged (`my-api · src/auth.js:42`) — it is the directory's basename and reads
+  fine unlabelled.
+
+### Fixed
+- **File-system race around the size guard** (CodeQL `js/file-system-race`, high). Size was
+  checked with `fsp.stat(path)` and the file then read with `fsp.readFile(path)`, so it could
+  grow in between. That guard is the OOM safety net, so bypassing it caused exactly the failure
+  it was added to prevent — and needs no adversary: a live log file, or one a build is still
+  writing, grows mid-run. Stat and read now share one file handle and the read is capped at
+  `maxFileSizeBytes + 1`, bounding memory even if the file grows after the handle opens.
+
+## [0.1.0] — 2026-08-18
 
 First public release.
 

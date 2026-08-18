@@ -125,7 +125,7 @@ total  5 indexed  3,891 skipped  0 deleted  41 chunks  12.3s
 ```
 
 Each `index <path>` call only prunes stale entries for files *under that path*, so indexing
-repo B never touches repo A's entries.
+folder B never touches folder A's entries.
 
 Useful flags: `--max-files <n>` stops after N new files (bounds memory on huge corpora),
 `--concurrency <n>` sets parallelism, `--verbose` logs each file to stderr.
@@ -179,13 +179,13 @@ block ready to drop into a context window:
 `contextLines` (default 0) reads N extra lines around each chunk from the source file — useful
 when a chunk boundary cuts off context you need.
 
-**`list_repos()`** — every configured folder with its name and absolute path. A good first call
+**`list_folders()`** — every configured folder with its name and absolute path. A good first call
 so the agent knows what corpus exists.
 
 **`cat_file(filePath, startLine?, endLine?)`** — read a file by absolute path, as returned by
 `search`/`gather`. Confined to the configured folders (see [Security](#security)).
 
-**`grep(pattern, repo?, fileGlob?, caseSensitive?, maxResults?)`** — literal or regex search
+**`grep(pattern, folder?, fileGlob?, caseSensitive?, maxResults?)`** — literal or regex search
 across the corpus, for when you need exact matches rather than similarity. Honors the same
 `.indexignore` rules as indexing.
 

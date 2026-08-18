@@ -14,10 +14,10 @@ import { version } from './version.js';
 
 const execFileAsync = promisify(execFile);
 
-function repoAndRel(filePath) {
+function folderAndRel(filePath) {
   const root = config.defaultRoots.find(r => filePath.startsWith(r + path.sep));
   return {
-    repo: root ? path.basename(root) : null,
+    folder: root ? path.basename(root) : null,
     rel:  root ? path.relative(root, filePath) : filePath,
   };
 }
@@ -70,7 +70,7 @@ export async function startMcpServer() {
       title: 'Semantic search → formatted context block',
       description:
         'Same as search, but returns the results pre-formatted as a single text block ready to '  +
-        'drop into a context window: a header with repo, relative path, line, and score, followed '  +
+        'drop into a context window: a header with folder, relative path, line, and score, followed '  +
         'by the chunk text. Optionally expands N lines of context around each chunk.',
       inputSchema: {
         query: z.string().describe('Natural-language query'),
@@ -93,14 +93,14 @@ export async function startMcpServer() {
 
       const sections = await Promise.all(
         results.map(async (r, i) => {
-          const { repo, rel } = repoAndRel(r.filePath);
+          const { folder, rel } = folderAndRel(r.filePath);
           const text = contextLines > 0
             ? await expandLines(r.filePath, r.startLine, r.text, contextLines)
             : r.text;
 
           const meta = [
             `[${i + 1}/${results.length}]`,
-            repo ?? r.filePath,
+            folder ?? r.filePath,
             `·  ${rel}`,
             `·  line ${r.startLine}`,
             `·  score ${r.score.toFixed(3)}`,
@@ -117,17 +117,17 @@ export async function startMcpServer() {
   );
 
   server.registerTool(
-    'list_repos',
+    'list_folders',
     {
-      title: 'List indexed repos',
+      title: 'List indexed folders',
       description:
-        'List the repos/folders configured for indexing, with their name and absolute path. '  +
+        'List the folders configured for indexing, with their name and absolute path. '  +
         'Useful as a first call so you know what corpus is available.',
       inputSchema: {},
     },
     async () => {
-      const repos = config.defaultRoots.map(r => ({ name: path.basename(r), path: r }));
-      const text = repos.map(r => `${r.name}  ${r.path}`).join('\n');
+      const folders = config.defaultRoots.map(r => ({ name: path.basename(r), path: r }));
+      const text = folders.map(f => `${f.name}  ${f.path}`).join('\n');
       return { content: [{ type: 'text', text }] };
     },
   );
@@ -138,7 +138,7 @@ export async function startMcpServer() {
       title: 'Read file content',
       description:
         'Read a file by absolute path, as returned by search or gather. Optionally limit to a ' +
-        'line range. Only files inside the configured repos can be read.',
+        'line range. Only files inside the configured folders can be read.',
       inputSchema: {
         filePath: z.string().describe('Absolute path to the file'),
         startLine: z.number().int().positive().optional().describe('First line to return (1-indexed, default 1)'),
@@ -151,8 +151,8 @@ export async function startMcpServer() {
         return {
           content: [{
             type: 'text',
-            text: `Refused: ${filePath} is not inside any configured repo. ` +
-              'Use list_repos to see what is readable.',
+            text: `Refused: ${filePath} is not inside any configured folder. ` +
+              'Use list_folders to see what is readable.',
           }],
           isError: true,
         };
@@ -170,8 +170,8 @@ export async function startMcpServer() {
         const to = endLine ?? lines.length;
         content = lines.slice(from, to).join('\n');
       }
-      const { repo, rel } = repoAndRel(safePath);
-      const header = repo ? `# ${repo}  ·  ${rel}\n\n` : '';
+      const { folder, rel } = folderAndRel(safePath);
+      const header = folder ? `# ${folder}  ·  ${rel}\n\n` : '';
       return { content: [{ type: 'text', text: header + content }] };
     },
   );
@@ -179,26 +179,26 @@ export async function startMcpServer() {
   server.registerTool(
     'grep',
     {
-      title: 'Literal text search across repos',
+      title: 'Literal text search across folders',
       description:
-        'Literal (or regex) search across the indexed repos. Complements search when you need ' +
-        'exact matches rather than semantic similarity. Returns repo, relative path, line ' +
+        'Literal (or regex) search across the indexed folders. Complements search when you need ' +
+        'exact matches rather than semantic similarity. Returns folder, relative path, line ' +
         'number, and the matching line.',
       inputSchema: {
         pattern: z.string().describe('Literal text or regex to search for'),
-        repo: z.string().optional().describe('Restrict to a single repo by name, e.g. "my-api"'),
+        folder: z.string().optional().describe('Restrict to a single folder by name, e.g. "my-api"'),
         fileGlob: z.string().optional().describe('File pattern, e.g. "*.rb" or "*.ts"'),
         caseSensitive: z.boolean().optional().describe('Match case (default false)'),
         maxResults: z.number().int().positive().optional().describe('Result limit (default 50)'),
       },
     },
-    async ({ pattern, repo, fileGlob, caseSensitive = false, maxResults = 50 }) => {
-      const roots = repo
-        ? config.defaultRoots.filter(r => path.basename(r) === repo)
+    async ({ pattern, folder, fileGlob, caseSensitive = false, maxResults = 50 }) => {
+      const roots = folder
+        ? config.defaultRoots.filter(r => path.basename(r) === folder)
         : config.defaultRoots;
 
       if (!roots.length) {
-        return { content: [{ type: 'text', text: `No repo found: ${repo}` }], isError: true };
+        return { content: [{ type: 'text', text: `No folder found: ${folder}` }], isError: true };
       }
 
       const args = ['-rn', '--with-filename'];
@@ -238,8 +238,8 @@ export async function startMcpServer() {
         const m = line.match(/^(.+?):(\d+):(.*)$/);
         if (!m) return line;
         const [, filePath, lineNo, text] = m;
-        const { repo: r, rel } = repoAndRel(filePath);
-        return `${r ?? filePath}  ·  ${rel}:${lineNo}  ${text.trim()}`;
+        const { folder: f, rel } = folderAndRel(filePath);
+        return `${f ?? filePath}  ·  ${rel}:${lineNo}  ${text.trim()}`;
       }).join('\n');
 
       const truncated = allHits.length > maxResults
@@ -252,9 +252,9 @@ export async function startMcpServer() {
   server.registerTool(
     'index',
     {
-      title: 'Reindex repos',
+      title: 'Reindex folders',
       description:
-        'Run an incremental reindex of the configured repos (or one specific directory). '  +
+        'Run an incremental reindex of the configured folders (or one specific directory). '  +
         'Equivalent to running `semantic-search index`. Returns a summary of files processed, '  +
         'skipped, and deleted, chunks written, and whether the run was truncated.',
       inputSchema: {
