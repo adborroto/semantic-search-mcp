@@ -4,6 +4,76 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-08-18
+
+### Changed
+
+- **BREAKING: indexing is no longer restricted to an allow-list of file extensions.** Point at a
+  folder and everything inside it is indexed, recursively. Previously only
+  `.txt .md .pdf .docx .js .ts .py .rb .json` were considered, which meant a Flutter, Kotlin,
+  Java, or TSX repo was indexed as if it contained no source code at all — searches over those
+  folders silently returned hits only from their Markdown and JSON. `.dart`, `.kt`, `.java`,
+  `.tsx`, `.sql`, `.erb`, `.yml` and everything else textual are now indexed as-is.
+  - The `extractableExtensions` config key is **removed**. If you set it, it is now ignored;
+    use `.indexignore` to exclude things instead.
+  - Replaced by two guards whose only job is keeping non-text bytes out of the tokenizer: a
+    `binaryExtensions` denylist (images, archives, fonts, compiled objects, model weights,
+    keystores) and a NUL-byte sniff over the first 4KB — the same heuristic `grep -I` uses,
+    which catches binaries with unremarkable extensions.
+  - **Reindex to pick up the newly-visible files:** `semantic-search index`. Incremental
+    reindexing keys off `mtime`/content hash, so previously-indexed files are skipped and only
+    the newly-eligible ones are embedded.
+
+- **BREAKING: `.gitignore` is now honored.** For a folder that is a git repo, file discovery is
+  delegated to `git ls-files --cached --others --exclude-standard`, so anything git ignores is
+  absent from the index by construction — nested `.gitignore` files at any depth,
+  `.git/info/exclude`, your global excludes file, and negation patterns (`!keep.this`) all behave
+  exactly as git does, because git is what decides. This is what makes "index everything" safe
+  in practice: generated and vendored output a project already ignores stays out without anyone
+  maintaining a second list. Non-git folders still fall back to a recursive walk plus the
+  built-in pattern list.
+  - Lockfiles (`*.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) were dropped from
+    `defaultIgnorePatterns`: they are committed, so "index what git doesn't ignore" includes
+    them, and `maxFileSizeBytes` already stops the large ones. Add them back via `.indexignore`
+    if you'd rather not have them.
+  - Symlinks are now skipped rather than followed, so a link inside an indexed folder can't pull
+    outside content into the index.
+
+- **Search scores are RRF sums, not cosine similarities.** Expect values around `0.03` where you
+  previously saw `0.9`. Only the ordering is meaningful — the absolute number never was
+  comparable across queries, and now it is visibly so. Set `"hybridSearch": false` for the old
+  vector-only behaviour and the old score scale.
+
+### Added
+
+- **Hybrid retrieval: BM25 + vector, fused with Reciprocal Rank Fusion.** A query now runs
+  through two independent arms — nearest-neighbour vector search, and a BM25 full-text search
+  over the same chunks — and the rankings are fused with RRF (`1 / (rrfK + rank)`, summed;
+  `rrfK` defaults to 60).
+  - The problem this fixes is recall, not ordering. The existing lexical boost can only reorder
+    chunks the vector query already returned, so a chunk whose sole signal is an exact term match
+    — an error code, a symbol name, a config key with no semantic neighbourhood — was unreachable
+    if it fell outside the vector pool. The lexical arm retrieves it independently.
+  - Fusion is on **rank**, not score, deliberately: cosine sits in `[-1, 1]` while BM25 is
+    unbounded above, so adding or averaging the raw scores would let one arm overwhelm the other
+    depending on corpus size.
+  - LanceDB gets a real FTS index, rebuilt at the end of each indexing run — an FTS index does
+    not cover rows added after it was built, so without the rebuild the chunks a run just wrote
+    would be invisible to the lexical arm. The `sqlite` fallback computes BM25 in JS, since
+    `node:sqlite` is not guaranteed to be built with FTS5.
+  - Degrades cleanly: an index built by an older version has no FTS index, so search falls back
+    to vector-only rather than failing. Full-text queries are reduced to bare terms first, so
+    LanceDB's query syntax can't be tripped by a `*`, `:` or unbalanced quote in user input.
+  - New config keys: `hybridSearch` (default `true`), `rrfK` (default `60`).
+
+### Fixed
+
+- **The MCP `grep` tool could report hits in files the indexer skips.** It now filters results
+  against the exact same file list the indexer builds — git's ignore rules included — rather than
+  re-deriving the rules from patterns alone. Previously it approximated the boundary with an
+  `--include` glob per allowed extension, which said nothing about gitignored build output. It
+  also passes `-I` and prunes `.git/`, so binary hits don't consume the result budget.
+
 ## [0.2.1] — 2026-08-18
 
 ### Fixed

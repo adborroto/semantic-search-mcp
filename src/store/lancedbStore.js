@@ -2,6 +2,17 @@ import path from 'node:path';
 import * as lancedb from '@lancedb/lancedb';
 
 const TABLE_NAME = 'chunks';
+const FTS_INDEX_NAME = 'text_idx';
+
+/**
+ * LanceDB parses the full-text query with a real query syntax, so raw user input
+ * containing `+`, `-`, `"`, `~`, `*` or `:` can either error or silently mean
+ * something other than "find these words". Reducing the query to bare terms keeps
+ * the BM25 arm predictable; phrase-level precision is the vector arm's job.
+ */
+function ftsTerms(query) {
+  return (query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []).join(' ');
+}
 
 function escapeSqlString(value) {
   return value.replace(/'/g, "''");
@@ -73,6 +84,52 @@ export async function createLanceDbStore(cfg) {
       if (!t) return [];
       const rows = await t.query().select(['filePath']).toArray();
       return Array.from(new Set(rows.map((r) => r.filePath)));
+    },
+
+    /**
+     * Build (or rebuild) the BM25 index over `text`.
+     *
+     * Called at the end of an indexing run rather than per-write: an FTS index does
+     * not cover rows added after it was built, so incremental `add` calls would
+     * leave the newest chunks unfindable by the lexical arm — the exact chunks a
+     * user just asked to be indexed. `replace: true` makes this idempotent.
+     */
+    async ensureFullTextIndex() {
+      const t = await getTable();
+      if (!t) return;
+      await t.createIndex('text', {
+        config: lancedb.Index.fts(),
+        name: FTS_INDEX_NAME,
+        replace: true,
+      });
+    },
+
+    /**
+     * BM25 ranking over the chunk text. Returns [] when no FTS index exists yet
+     * (an index built by an older version, or a run that never completed), so
+     * hybrid search degrades to vector-only instead of failing.
+     */
+    async queryFullText(query, k) {
+      const t = await getTable();
+      if (!t) return [];
+      const terms = ftsTerms(query);
+      if (!terms) return [];
+
+      const indices = await t.listIndices();
+      if (!indices.some((i) => i.name === FTS_INDEX_NAME)) return [];
+
+      const rows = await t.query().fullTextSearch(terms).limit(k).toArray();
+      return rows.map((r) => ({
+        id: r.id,
+        text: r.text,
+        filePath: r.filePath,
+        offset: r.offset,
+        startLine: r.startLine,
+        mtimeMs: r.mtimeMs,
+        contentHash: r.contentHash,
+        chunkIndex: r.chunkIndex,
+        score: r._score ?? 0,
+      }));
     },
 
     async querySimilar(vector, k) {

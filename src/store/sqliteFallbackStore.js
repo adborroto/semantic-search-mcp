@@ -90,6 +90,75 @@ export async function createSqliteFallbackStore(cfg) {
       return listPathsStmt.all().map((r) => r.filePath);
     },
 
+    /**
+     * No-op: the fallback store scores lexically on the fly (see queryFullText),
+     * so there is no separate index to maintain. Present so callers don't have to
+     * branch on which backend they got.
+     */
+    async ensureFullTextIndex() {},
+
+    /**
+     * BM25 over the chunk text, computed in JS.
+     *
+     * node:sqlite is not guaranteed to be built with FTS5, and this store is
+     * already the "works everywhere, not fast" path — it full-scans for vector
+     * search too — so scoring here keeps the backend dependency-free and its
+     * ranking comparable to LanceDB's.
+     */
+    async queryFullText(query, k) {
+      const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [])];
+      if (terms.length === 0) return [];
+
+      const rows = allStmt.all();
+      if (rows.length === 0) return [];
+
+      // Standard BM25 constants: k1 bounds how much repeated terms help, b sets how
+      // strongly long chunks are penalised.
+      const K1 = 1.2;
+      const B = 0.75;
+
+      const tokenized = rows.map((r) => (r.text ?? '').toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []);
+      const avgLen = tokenized.reduce((sum, t) => sum + t.length, 0) / rows.length;
+
+      const docFreq = new Map();
+      for (const tokens of tokenized) {
+        const present = new Set(tokens);
+        for (const term of terms) if (present.has(term)) docFreq.set(term, (docFreq.get(term) ?? 0) + 1);
+      }
+
+      const scored = [];
+      for (let i = 0; i < rows.length; i++) {
+        const tokens = tokenized[i];
+        if (tokens.length === 0) continue;
+        let score = 0;
+        for (const term of terms) {
+          const df = docFreq.get(term) ?? 0;
+          if (df === 0) continue;
+          let tf = 0;
+          for (const tok of tokens) if (tok === term) tf++;
+          if (tf === 0) continue;
+          const idf = Math.log(1 + (rows.length - df + 0.5) / (df + 0.5));
+          score += idf * ((tf * (K1 + 1)) / (tf + K1 * (1 - B + (B * tokens.length) / avgLen)));
+        }
+        if (score <= 0) continue;
+        const r = rows[i];
+        scored.push({
+          id: r.id,
+          text: r.text,
+          filePath: r.filePath,
+          offset: r.offset,
+          startLine: r.startLine,
+          mtimeMs: r.mtimeMs,
+          contentHash: r.contentHash,
+          chunkIndex: r.chunkIndex,
+          score,
+        });
+      }
+
+      scored.sort((a, b) => b.score - a.score);
+      return scored.slice(0, k);
+    },
+
     async querySimilar(vector, k) {
       const rows = allStmt.all();
       const scored = rows.map((r) => ({

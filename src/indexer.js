@@ -2,7 +2,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { loadIgnore } from './ignoreRules.js';
+import { listIndexableFiles } from './ignoreRules.js';
 import { createStore } from './store/vectorStore.js';
 import { extractByExtension } from './extractors/index.js';
 import { chunkText } from './chunker.js';
@@ -52,24 +52,14 @@ class Mutex {
   run(fn) { return (this.#q = this.#q.then(fn, fn)); }
 }
 
-/** Recursively walk `dir`, pruning ignored directories, yielding candidate file paths. */
-async function* walk(root, dir, ig) {
-  const entries = await fsp.readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const abs = path.join(dir, entry.name);
-    const rel = path.relative(root, abs);
-    const relForIgnore = entry.isDirectory() ? `${rel}/` : rel;
-    if (ig.ignores(relForIgnore)) continue;
-
-    if (entry.isDirectory()) {
-      yield* walk(root, abs, ig);
-    } else if (entry.isFile()) {
-      const ext = path.extname(entry.name).toLowerCase();
-      if (config.extractableExtensions.includes(ext)) {
-        yield abs;
-      }
-    }
-  }
+/**
+ * Heuristic every text editor and `grep -I` uses: a NUL byte in the first block
+ * means binary. Catches the files the extension denylist can't know about —
+ * a `.dat`, a `.model`, an extensionless build artifact — before their bytes
+ * reach the tokenizer.
+ */
+function looksBinary(buffer) {
+  return buffer.subarray(0, 4096).includes(0);
 }
 
 function hashBuffer(buffer) {
@@ -94,7 +84,6 @@ export async function runIndex({
     );
   }
   const store = await createStore();
-  const ig = loadIgnore(root);
   // Tokenizer loaded lazily — if nothing needs indexing, model never loads
   let _tokenizerPromise = null;
   const lazyTokenizer = () => { _tokenizerPromise ??= getTokenizer(); return _tokenizerPromise; };
@@ -112,11 +101,8 @@ export async function runIndex({
 
   // Collect all candidate paths + load freshness in bulk (1 DB query vs N per-file lookups)
   if (TTY) process.stdout.write(`\r\x1b[2K${C.gray}  ⠋  walking…${C.reset}`);
-  const allFiles = [];
-  for await (const filePath of walk(root, root, ig)) {
-    allFiles.push(filePath);
-    onDisk.add(filePath);
-  }
+  const allFiles = await listIndexableFiles(root);
+  for (const filePath of allFiles) onDisk.add(filePath);
   if (TTY) process.stdout.write(`\r\x1b[2K${C.gray}  ⠋  loading index…${C.reset}`);
   const freshnessMap = force ? new Map() : await store.getAllFreshness();
   if (TTY) process.stdout.write('\r\x1b[2K');
@@ -186,6 +172,13 @@ export async function runIndex({
         return;
       }
       buffer = bounded.subarray(0, bytesRead);
+
+      if (looksBinary(buffer)) {
+        filesSkipped++;
+        filesDone++;
+        status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+        return;
+      }
     } catch (err) {
       filesDone++;
       print(`  ${C.red}✗${C.reset} ${C.dim}read error${C.reset}  ${C.gray}${rel}${C.reset}  ${C.dim}${err.message}${C.reset}`);
@@ -279,6 +272,18 @@ export async function runIndex({
         const rel = path.relative(root, indexedPath);
         print(`  ${C.red}✂${C.reset} ${C.dim}deleted${C.reset}   ${C.gray}${rel}${C.reset}`);
       }
+    }
+  }
+
+  // Built once per run, after every write: an FTS index doesn't cover rows added
+  // after it was created, so refreshing it here is what makes the chunks this run
+  // just wrote reachable by hybrid search's lexical arm.
+  if (chunksWritten > 0 || filesDeleted > 0) {
+    if (TTY) process.stdout.write(`\r\x1b[2K${C.gray}  ⠋  building text index…${C.reset}`);
+    try {
+      await store.ensureFullTextIndex();
+    } catch (err) {
+      print(`  ${C.yellow}⊘${C.reset} ${C.dim}text index skipped${C.reset}  ${C.dim}${err.message}${C.reset}`);
     }
   }
 

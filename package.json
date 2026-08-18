@@ -1,6 +1,6 @@
 {
   "name": "@adborroto/semantic-search-mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "RAG-lite: local semantic search over your files, as a CLI and an MCP server. No LLM, no API keys, no servers.",
   "main": "src/index.js",
   "type": "module",

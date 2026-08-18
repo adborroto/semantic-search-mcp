@@ -24,6 +24,8 @@ import { createSqliteFallbackStore } from './sqliteFallbackStore.js';
  * @property {(filePath: string) => Promise<{mtimeMs:number, contentHash:string}|null>} getFreshness
  * @property {() => Promise<string[]>} listIndexedFilePaths
  * @property {(vector: number[], k: number) => Promise<Array<ChunkRecord & {score:number}>>} querySimilar
+ * @property {(query: string, k: number) => Promise<Array<ChunkRecord & {score:number}>>} queryFullText
+ * @property {() => Promise<void>} ensureFullTextIndex
  * @property {() => Promise<void>} close
  */
 

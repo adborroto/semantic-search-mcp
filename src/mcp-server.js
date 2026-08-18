@@ -201,13 +201,12 @@ export async function startMcpServer() {
         return { content: [{ type: 'text', text: `No folder found: ${folder}` }], isError: true };
       }
 
-      const args = ['-rn', '--with-filename'];
+      // -I skips binary files, and .git/ is pruned up front: without those, grep
+      // reports hits inside object files and packed refs, which the ignore filter
+      // below would drop anyway — but only after they've eaten the grep buffer.
+      const args = ['-rnI', '--with-filename', '--exclude-dir=.git'];
       if (!caseSensitive) args.push('-i');
-      if (fileGlob) {
-        args.push(`--include=${fileGlob}`);
-      } else {
-        for (const ext of config.extractableExtensions) args.push(`--include=*${ext}`);
-      }
+      if (fileGlob) args.push(`--include=${fileGlob}`);
       args.push('--', pattern, ...roots);
 
       let stdout = '';
@@ -219,12 +218,12 @@ export async function startMcpServer() {
       }
 
       // `grep -r` walks the raw filesystem, so it happily reports hits inside
-      // node_modules, build output, or a credentials.json that the indexer was told
-      // to skip (.json is in extractableExtensions). Filter through the same ignore
-      // rules the indexer uses, so the ignore list is a real boundary rather than an
-      // indexing-only optimisation. Filtering happens *before* the maxResults slice
-      // so ignored hits don't consume the result budget.
-      const isIgnored = makeIgnoreFilter(roots);
+      // node_modules, gitignored build output, or a credentials.json the indexer was
+      // told to skip. Filter against the exact same file list the indexer would
+      // index, so the ignore rules are a real boundary rather than an indexing-only
+      // optimisation. Filtering happens *before* the maxResults slice so ignored
+      // hits don't consume the result budget.
+      const isIgnored = await makeIgnoreFilter(roots);
       const allHits = stdout.trimEnd().split('\n').filter(line => {
         const m = line.match(/^(.+?):(\d+):(.*)$/);
         return m ? !isIgnored(m[1]) : true;

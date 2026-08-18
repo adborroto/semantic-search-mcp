@@ -136,18 +136,51 @@ Useful flags: `--max-files <n>` stops after N new files (bounds memory on huge c
 semantic-search search "how does the retry logic work" -k 5
 ```
 
-Prints a table of file path, line number, score, and a text preview. Under the hood: embed the
-query, pull a pool of nearest vector matches, apply a small lexical boost for chunks that also
-contain the literal query terms, and return the top `k`.
+Prints a table of file path, line number, score, and a text preview.
 
-### Excluding files
+Retrieval is **hybrid**: the query goes to two independent arms — a vector search over the
+embeddings, and a BM25 full-text search over the same chunks — and the two rankings are fused
+with [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf). The
+arms fail differently: the vector arm misses exact identifiers, error strings and config keys it
+has no semantic handle on; the lexical arm misses paraphrases. Running both is a recall fix, and
+fusing on *rank* rather than score keeps an unbounded BM25 score from drowning out cosine
+similarity.
 
-Indexing skips `node_modules/`, `.git/`, build output, and lockfiles by default, along with
-any file over 500,000 bytes. To exclude more, drop a gitignore-style `.indexignore` in either
-place:
+Set `"hybridSearch": false` in `config.json` for vector-only retrieval, and `"rrfK"` to tune
+RRF's rank-smoothing constant (default 60, from the paper).
 
-- **inside a folder you index** — patterns are relative to that folder, so a repo can exclude
-  its own generated output;
+### What gets indexed
+
+Point it at a folder and **everything inside it is indexed, recursively**. There is no
+allow-list of "supported" file extensions — `.dart`, `.kt`, `.java`, `.tsx`, `.sql`, `.erb` and
+anything else textual are all indexed as-is, with `.pdf` and `.docx` going through a parser
+first.
+
+Four things are excluded:
+
+1. **Whatever git ignores**, if the folder is a git repo. `.gitignore` is honored at any depth,
+   along with `.git/info/exclude`, your global excludes file, and negation patterns
+   (`!keep.this`). This is delegated to `git ls-files` rather than reimplemented, so it matches
+   git exactly — which means generated and vendored output your project already ignores stays
+   out of the index without you maintaining a second list.
+2. **Your `.indexignore` rules** (see below), for content that *is* committed but shouldn't be
+   searchable — fixtures, snapshots, a checked-in secrets template.
+3. **Binary files**, by extension (images, archives, fonts, compiled objects, model weights) and
+   by content — a NUL byte in the first 4KB means binary, the same heuristic `grep -I` uses.
+   This is a safety measure to keep non-text bytes out of the tokenizer, not a judgement about
+   what is worth indexing.
+4. **Files over 500,000 bytes** (`maxFileSizeBytes`), which is the main guard against a
+   generated single-line megabyte file exhausting memory.
+
+Symlinks are skipped rather than followed, so a link planted inside a folder can't pull outside
+content into the index.
+
+For folders that are *not* git repos there is no `.gitignore` to lean on, so a small built-in
+list (`node_modules/`, `.git/`, `dist/`, `build/`, `coverage/`, `vendor/`, …) still applies.
+
+To exclude more, drop a gitignore-style `.indexignore` in either place:
+
+- **inside a folder you index** — patterns are relative to that folder;
 - **next to your config** (`~/.config/semantic-search/.indexignore`) — applies everywhere.
 
 See [`.indexignore.example`](./.indexignore.example) for a starting point covering iOS, Android,
@@ -186,8 +219,9 @@ so the agent knows what corpus exists.
 `search`/`gather`. Confined to the configured folders (see [Security](#security)).
 
 **`grep(pattern, folder?, fileGlob?, caseSensitive?, maxResults?)`** — literal or regex search
-across the corpus, for when you need exact matches rather than similarity. Honors the same
-`.indexignore` rules as indexing.
+across the corpus, for when you need exact matches rather than similarity. Filtered against the
+exact same file list the indexer would index, so gitignored and `.indexignore`d files can't leak
+through exact-match search.
 
 ```
 my-api  ·  src/auth/session.js:42  export function createSession(user) {
@@ -235,14 +269,60 @@ folder is readable by any MCP client that can reach the server.
 
 - `cat_file` refuses paths outside the configured folders, resolving symlinks first so a link
   planted inside a folder can't be used to escape it.
-- `grep` applies your `.indexignore` rules, so files deliberately excluded from indexing don't
-  leak through exact-match search instead.
+- `grep` is filtered against the same file list the indexer builds — git's ignore rules plus
+  your `.indexignore` — so files deliberately excluded from indexing don't leak through
+  exact-match search instead.
 - Subprocesses are spawned with argv arrays (never a shell), so patterns can't inject commands.
 
 Given that, **don't point it at a corpus you wouldn't hand to your LLM provider** — chunks are
 returned to whatever client asked for them. See [SECURITY.md](./SECURITY.md).
 
 ## How it works
+
+### File discovery
+
+The rule is "index everything under the folder", and the only interesting part is what *not* to
+index. Rather than reimplementing git's ignore semantics — nested `.gitignore` files, negations,
+`info/exclude`, the global excludes file — a git root is enumerated with:
+
+```
+git ls-files -z --cached --others --exclude-standard
+```
+
+Tracked files plus untracked-but-not-ignored ones, scoped to the directory it runs in. Anything
+git ignores is absent by construction. Non-git folders fall back to a plain recursive walk with
+the built-in pattern list.
+
+The same function backs both the indexer and the MCP `grep` tool
+([`src/ignoreRules.js`](./src/ignoreRules.js)). That's deliberate: `grep` shells out to real
+`grep -r`, which happily reports hits inside gitignored build output, so it filters its results
+against the indexer's own file list. If the two derived their rules separately they would drift,
+and the ignore list would stop being a boundary.
+
+### Hybrid retrieval
+
+A query runs through two arms in parallel:
+
+- **Vector** — embed the query, take the nearest neighbours by cosine distance, then reorder that
+  list with a small lexical boost for chunks containing the literal query terms.
+- **Lexical** — BM25 over the same chunk text, via a LanceDB full-text index (the `sqlite`
+  fallback computes BM25 in JS, since `node:sqlite` isn't guaranteed to ship FTS5).
+
+The two rankings are fused with RRF: each list contributes `1 / (60 + rank)` to every chunk it
+returns, and the contributions are summed. Fusing on rank rather than score is the point —
+cosine sits in `[-1, 1]` while BM25 is unbounded above, so adding or averaging raw scores lets
+one arm silently overwhelm the other depending on corpus size.
+
+Why two arms at all: a lexical boost applied to the vector arm's output can only *reorder* what
+the vector query already returned. A chunk whose sole signal is an exact term match — an error
+code, a symbol name, a config key with no semantic neighbourhood — was unreachable if it fell
+outside the vector pool. The lexical arm retrieves it independently. That's a recall fix, not a
+reranking one, and it is why search scores now look like `0.03` rather than `0.9`: they are RRF
+sums, not cosine similarities. Only their ordering is meaningful.
+
+The full-text index is rebuilt at the end of each indexing run, because an FTS index doesn't
+cover rows added after it was built — otherwise the chunks a run just wrote would be invisible
+to the lexical arm.
 
 ### Chunking
 
@@ -271,7 +351,7 @@ its source file's `mtimeMs` and a `sha256` content hash. On each run:
 1. If a file's on-disk `mtime` matches what's stored, skip it without reading the file.
 2. If `mtime` changed but the content hash is identical (a `touch`), skip re-embedding.
 3. Otherwise, delete that file's old chunks and insert freshly embedded ones.
-4. After the walk, any indexed path no longer on disk (and under the root being indexed) is
+4. After the listing, any indexed path no longer on disk (and under the root being indexed) is
    pruned.
 
 ### Storage backends
@@ -294,16 +374,17 @@ src/
   configFile.js        Read/modify/write the config file (backs add/remove/list)
   embeddings.js        transformers.js pipeline + tokenizer (lazy singletons)
   chunker.js           Token-aware paragraph packing with overlap
-  ignoreRules.js       .indexignore layering, shared by the indexer and grep
+  ignoreRules.js       What is indexable: git ignore rules + .indexignore + binary filter,
+                       shared by the indexer and grep so they can't drift apart
   safePath.js          Path confinement for the MCP file-reading tools
   version.js           Version read from package.json
-  extractors/          text (.txt .md .js .ts .py .rb .json), pdf (pdf-parse), docx (mammoth)
+  extractors/          text (anything not binary), pdf (pdf-parse), docx (mammoth)
   store/
     vectorStore.js        Storage interface + backend selector
     lancedbStore.js       LanceDB implementation (default)
     sqliteFallbackStore.js node:sqlite + manual cosine fallback
-  indexer.js           Walk + extract + chunk + embed + incremental upsert/prune
-  search.js            Embed query + vector search + lexical boost — shared by CLI and MCP
+  indexer.js           List + extract + chunk + embed + incremental upsert/prune
+  search.js            Hybrid retrieval: vector + BM25 arms fused with RRF — shared by CLI and MCP
   mcp-server.js        MCP stdio server: the six tools above
   index.js             CLI entrypoint (commander)
 scripts/index-all.sh   Batched indexing for very large corpora on constrained hosts (Linux)
@@ -327,8 +408,8 @@ directories. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 ## Out of scope (by design)
 
 - **Answer generation.** This returns chunks, not answers. Feed them to an LLM yourself.
-- **Reranking with a second model.** The lexical boost is a cheap, dependency-free
-  approximation — not a substitute for a real cross-encoder reranker.
+- **Reranking with a second model.** Hybrid retrieval plus RRF is dependency-free and gets
+  most of the way there — but it is not a cross-encoder reranker.
 - **A web UI.** CLI and MCP only.
 - **Massive-scale corpora.** Built for a personal or team-sized corpus of docs and code — tens
   of thousands of chunks, not millions. Both backends assume that scale.

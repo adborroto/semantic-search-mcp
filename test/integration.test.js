@@ -49,7 +49,7 @@ test('index + search end to end', { skip, timeout: 600_000 }, async (t) => {
     const { stdout } = await run('index', corpus);
     const summary = JSON.parse(stdout.trimEnd().split('\n').at(-1));
 
-    assert.ok(summary.filesProcessed >= 3, `expected >=3 files, got ${summary.filesProcessed}`);
+    assert.ok(summary.filesProcessed >= 5, `expected >=5 files, got ${summary.filesProcessed}`);
     assert.ok(summary.chunksWritten > 0, 'should have written chunks');
     assert.equal(summary.truncated, false);
   });
@@ -57,16 +57,40 @@ test('index + search end to end', { skip, timeout: 600_000 }, async (t) => {
   await t.test('honors .indexignore — ignored files are not in the index', async () => {
     // build_output/ and docs/private/ are excluded by the fixture's .indexignore.
     // Searching for text that appears ONLY in those files must not surface them.
+    // Asserting on file paths rather than bare words matters: `.indexignore` is
+    // itself an indexable text file, so its own patterns show up as result text.
     const { stdout } = await run('search', 'excluded fixture marker must not be indexed', '-k', '5');
 
     assert.ok(
-      !stdout.includes('build_output'),
+      !stdout.includes('build_output/generated.json'),
       `ignored build_output/ leaked into the index:\n${stdout}`,
     );
     assert.ok(
-      !stdout.includes('private'),
+      !stdout.includes('private/secret.md'),
       `ignored docs/private/ leaked into the index:\n${stdout}`,
     );
+  });
+
+  await t.test('indexes every language in the corpus, not an allow-list of extensions', async () => {
+    // Regression: extensions used to be allow-listed (.js/.md/.py/.rb/.ts/.json only),
+    // so a Flutter or Kotlin repo was indexed as if it contained no source code at all.
+    const dart = await run('search', 'charging a card during checkout', '-k', '5');
+    assert.ok(dart.stdout.includes('payment_service.dart'), `.dart not indexed:\n${dart.stdout}`);
+
+    const kotlin = await run('search', 'following another account is idempotent', '-k', '5');
+    assert.ok(kotlin.stdout.includes('Registration.kt'), `.kt not indexed:\n${kotlin.stdout}`);
+  });
+
+  await t.test('binary files are not indexed', async () => {
+    const { stdout } = await run('search', 'fake png bytes', '-k', '5');
+    assert.ok(!stdout.includes('logo.png'), `binary file leaked into the index:\n${stdout}`);
+  });
+
+  await t.test('an exact identifier is retrievable — the lexical arm of hybrid search', async () => {
+    // ERR_ZORBLATT_7741 is a made-up token with no semantic neighbourhood; BM25 is
+    // what finds it, and the fused ranking has to keep it on top.
+    const { stdout } = await run('search', 'ERR_ZORBLATT_7741', '-k', '3');
+    assert.ok(stdout.includes('payment_service.dart'), `exact term not retrieved:\n${stdout}`);
   });
 
   await t.test('finds the semantically relevant file for a paraphrased query', async () => {
@@ -84,7 +108,7 @@ test('index + search end to end', { skip, timeout: 600_000 }, async (t) => {
     const summary = JSON.parse(stdout.trimEnd().split('\n').at(-1));
 
     assert.equal(summary.filesProcessed, 0, 'unchanged files must not be reprocessed');
-    assert.ok(summary.filesSkipped >= 3, 'unchanged files should be counted as skipped');
+    assert.ok(summary.filesSkipped >= 5, 'unchanged files should be counted as skipped');
     assert.equal(summary.chunksWritten, 0);
   });
 
