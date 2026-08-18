@@ -143,34 +143,59 @@ export async function runIndex({
     currentFile = rel;
     if (verbose) process.stderr.write(`processing: ${rel}\n`);
 
-    const stat = await fsp.stat(filePath);
-
-    if (stat.size > config.maxFileSizeBytes) {
-      filesSkipped++;
-      filesDone++;
-      print(`  ${C.yellow}⊘${C.reset} ${C.dim}too large${C.reset}  ${C.gray}${rel}${C.reset}`);
-      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
-      return;
-    }
-
-    const existing = freshnessMap.get(filePath);
-
-    if (existing && existing.mtimeMs === stat.mtimeMs) {
-      filesSkipped++;
-      filesDone++;
-      status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
-      return;
-    }
-
+    // Size check and read go through a single file handle, and the read itself is
+    // capped. Checking size with fsp.stat(path) and then reading with
+    // fsp.readFile(path) is a time-of-check/time-of-use race: the file can grow in
+    // between, and the size guard is the OOM safety net (see maxFileSizeBytes in
+    // config.js), so bypassing it is exactly the failure it was added to prevent.
+    // A live log file or one a build is still writing is enough to trigger this by
+    // accident. Reading at most maxFileSizeBytes + 1 bytes bounds memory even if
+    // the file grows after the handle is opened.
+    const limit = config.maxFileSizeBytes;
+    let stat;
     let buffer;
+    let handle;
     try {
-      buffer = await fsp.readFile(filePath);
+      handle = await fsp.open(filePath, 'r');
+      stat = await handle.stat();
+
+      if (stat.size > limit) {
+        filesSkipped++;
+        filesDone++;
+        print(`  ${C.yellow}⊘${C.reset} ${C.dim}too large${C.reset}  ${C.gray}${rel}${C.reset}`);
+        status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+        return;
+      }
+
+      const existing = freshnessMap.get(filePath);
+      if (existing && existing.mtimeMs === stat.mtimeMs) {
+        filesSkipped++;
+        filesDone++;
+        status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+        return;
+      }
+
+      const bounded = Buffer.allocUnsafe(limit + 1);
+      const { bytesRead } = await handle.read(bounded, 0, limit + 1, 0);
+
+      if (bytesRead > limit) {
+        filesSkipped++;
+        filesDone++;
+        print(`  ${C.yellow}⊘${C.reset} ${C.dim}too large${C.reset}  ${C.gray}${rel}${C.reset}`);
+        status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
+        return;
+      }
+      buffer = bounded.subarray(0, bytesRead);
     } catch (err) {
       filesDone++;
       print(`  ${C.red}✗${C.reset} ${C.dim}read error${C.reset}  ${C.gray}${rel}${C.reset}  ${C.dim}${err.message}${C.reset}`);
       status(filesDone, allFiles.length, filesProcessed, chunksWritten, elapsed(), currentFile);
       return;
+    } finally {
+      await handle?.close();
     }
+
+    const existing = freshnessMap.get(filePath);
     const contentHash = hashBuffer(buffer);
 
     if (existing && existing.contentHash === contentHash) {
