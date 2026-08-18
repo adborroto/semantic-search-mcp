@@ -1,4 +1,4 @@
-import { pipeline, AutoTokenizer, env } from '@xenova/transformers';
+import { pipeline, AutoTokenizer, env } from '@huggingface/transformers';
 import { config } from './config.js';
 
 env.cacheDir = config.modelCacheDir;
@@ -9,7 +9,7 @@ let tokenizerPromise = null;
 function getExtractor() {
   if (!extractorPromise) {
     extractorPromise = pipeline('feature-extraction', config.modelName, {
-      quantized: config.modelQuantized,
+      dtype: config.modelDtype,
     });
   }
   return extractorPromise;

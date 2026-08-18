@@ -90,7 +90,7 @@ export async function runIndex({
   if (!root) {
     throw new Error(
       'No root directory to index. Pass one explicitly (`semantic-search index <path>`) ' +
-        `or set "defaultRoots" in ${config.configPath} (run \`semantic-search init\` to create it).`,
+        'or add a folder first with `semantic-search add <path>`.',
     );
   }
   const store = await createStore();
@@ -272,4 +272,36 @@ export async function runIndex({
 
   await store.close();
   return { filesProcessed, filesSkipped, filesDeleted, chunksWritten, truncated };
+}
+
+/**
+ * Delete every indexed chunk belonging to the given roots.
+ *
+ * `runIndex` only prunes stale entries *under the root it is currently walking*,
+ * so a folder dropped from the config is never revisited and its chunks would
+ * otherwise stay in the index — and keep surfacing in search results — forever.
+ * That matters beyond tidiness: the index holds verbatim text, so a user who
+ * removes a private folder reasonably expects its content to stop being served.
+ *
+ * @param {string[]} roots absolute paths whose chunks should be removed
+ * @returns {Promise<{filesDeleted:number}>}
+ */
+export async function purgeRoots(roots) {
+  if (!roots.length) return { filesDeleted: 0 };
+
+  const store = await createStore();
+  let filesDeleted = 0;
+  try {
+    const prefixes = roots.map(r => path.resolve(r) + path.sep);
+    const indexed = await store.listIndexedFilePaths();
+
+    for (const indexedPath of indexed) {
+      if (!prefixes.some(p => indexedPath.startsWith(p))) continue;
+      await store.deleteByFilePath(indexedPath);
+      filesDeleted++;
+    }
+  } finally {
+    await store.close();
+  }
+  return { filesDeleted };
 }

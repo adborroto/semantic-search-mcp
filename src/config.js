@@ -23,7 +23,7 @@ export const dataDir = process.env.SS_INDEX_DIR || path.join(xdgDataHome, 'seman
 /**
  * Config file resolution, highest precedence first:
  *   1. SS_CONFIG_PATH             — explicit override
- *   2. ~/.config/semantic-search/config.json  — canonical location (`init` writes here)
+ *   2. ~/.config/semantic-search/config.json  — canonical location (`add` writes here)
  *   3. <packageRoot>/config.json  — dev fallback, only when working inside a checkout
  */
 function resolveConfigPath() {
@@ -31,7 +31,7 @@ function resolveConfigPath() {
   if (fs.existsSync(configPath)) return configPath;
   const devLocal = path.join(packageRoot, 'config.json');
   if (fs.existsSync(devLocal)) return devLocal;
-  return configPath; // may not exist yet — see the `init` command
+  return configPath; // may not exist yet — `add` creates it on demand
 }
 
 const userConfigPath = resolveConfigPath();
@@ -43,7 +43,11 @@ const defaults = {
   modelCacheDir: path.join(dataDir, 'models'),
   storeBackend: 'lancedb', // 'lancedb' | 'sqlite'
   modelName: 'Xenova/all-MiniLM-L6-v2',
-  modelQuantized: true,
+  // 'q8' is the int8-quantized ONNX weights — ~4x smaller and faster than fp32 on
+  // CPU with negligible retrieval-quality loss at this model size. transformers.js
+  // v3 renamed the old boolean `quantized: true` to `dtype`; passing the old key
+  // is silently ignored and you get fp32, so keep this as `dtype`.
+  modelDtype: 'q8',
   vectorDim: 384, // confirmed via smoke test — must match the embedding model's real output size
   chunk: {
     targetTokens: 200,

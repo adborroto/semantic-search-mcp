@@ -31,7 +31,26 @@ First public release.
   18 was wrong for the sqlite fallback backend.
 - MCP server version is read from `package.json` rather than hardcoded, so it can't drift.
 
+### Security
+- Migrated from the unmaintained `@xenova/transformers` v2 to `@huggingface/transformers` v3,
+  and pinned `sharp` forward via an override. This clears **12 advisories (1 critical, 8 high)**
+  down to zero: the critical one was arbitrary code execution in `protobufjs`, reachable through
+  `onnx-proto` → `onnxruntime-web`, which transformers.js v2 loaded eagerly even for pure text
+  embedding. `sharp`/libvips CVEs came in the same way.
+- Added a Security workflow: CodeQL (`security-extended`), `npm audit` gated at high severity for
+  runtime dependencies, dependency review with a copyleft-licence deny list on PRs, gitleaks
+  secret scanning over full history, and a check that the published tarball contains no local
+  config, index fragments, or absolute paths containing a real username. Runs on push, PR, and
+  weekly so advisories in unchanged dependencies still surface.
+- Added Dependabot for npm and GitHub Actions, grouping minor/patch bumps and isolating majors.
+- Workflows declare least-privilege `permissions:` and reference tokens only via `secrets.*`.
+
 ### Fixed
+- **The `dtype`/`quantized` rename was silently downgrading the model.** transformers.js v3
+  ignores the v2 `quantized: true` option, so the embedding model would have loaded as fp32
+  (~4x larger, slower) without a corresponding config change. Now set explicitly as
+  `modelDtype: 'q8'`, preserving the previous int8 weights — existing indexes stay valid.
+
 - **Chunks could exceed the embedding model's 256-token window.** Overlap was capped only by
   `overlapTokens`, so overlap plus a large-but-legal paragraph could produce an oversized chunk
   (e.g. 180/20/250-token paragraphs yielded 270 tokens against a 254 limit). The model silently
@@ -43,6 +62,10 @@ First public release.
 - **`grep` bypassed ignore rules.** It walked the raw filesystem, so it could surface content
   from files the indexer deliberately skipped — including `.json` credentials inside an indexed
   repo. It now applies the same `.indexignore` rules as indexing.
+- **Removing a folder left its content searchable forever.** `index` only prunes stale entries
+  under the root it is walking, so a folder dropped from the config was never revisited and its
+  chunks — verbatim file text — kept appearing in search results. `remove` now purges them by
+  default; `--keep-index` opts out.
 - Removed an unconditional per-file debug write to stderr that fired even in MCP mode.
 - `scripts/index-all.sh` no longer defaults to a hardcoded path, validates its argument, and
   skips the memory gate on platforms without `free` instead of failing.

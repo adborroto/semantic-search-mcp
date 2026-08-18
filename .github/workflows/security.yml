@@ -1,0 +1,123 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so newly-disclosed advisories in unchanged dependencies still surface.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@v3
+
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      # Runtime dependencies are what ship to users, so those must be clean.
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      # Dev-only advisories shouldn't block a release, but we still want to see them.
+      - name: Audit dev dependencies (informational)
+        run: npm audit --audit-level=moderate || true
+
+  dependency-review:
+    name: Dependency review
+    # Only meaningful on a PR — it diffs the manifest against the base branch.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+          # Copyleft licences would be a problem for an MIT project.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.1
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks needs history to scan past commits
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  leak-check:
+    name: No private data in tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      # This project's whole purpose is indexing private files, so a stray local
+      # config, index fragment, or absolute home path is the most likely leak.
+      - name: Reject local state and absolute home paths
+        run: |
+          set -euo pipefail
+
+          echo "── files staged for publish ──"
+          npm pack --dry-run --json > pack.json
+          node -e "
+            const files = require('./pack.json')[0].files.map(f => f.path);
+            console.log(files.join('\n'));
+            const forbidden = files.filter(f =>
+              f.startsWith('.data/') ||
+              f === 'config.json' ||
+              f === '.indexignore' ||
+              f.startsWith('.claude/') ||
+              f.startsWith('test/') ||
+              /\.(env|pem|key|p12|sqlite|sqlite3|db|duckdb|faiss|tgz)\$/.test(f)
+            );
+            if (forbidden.length) {
+              console.error('\nForbidden files in tarball:\n' + forbidden.join('\n'));
+              process.exit(1);
+            }
+          "
+
+          echo "── absolute home paths in tracked files ──"
+          # /home/me and ~/ are documentation placeholders; a real username is not.
+          if git ls-files -z | xargs -0 grep -nE '/(Users|home)/(?!me\b)[a-z][a-z0-9._-]+' -P 2>/dev/null; then
+            echo "Found an absolute path containing a real username." >&2
+            exit 1
+          fi
+          echo "none"

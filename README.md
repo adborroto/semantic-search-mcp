@@ -8,9 +8,9 @@ with them.
 
 Everything runs locally and offline after the first run:
 
-- **Embeddings**: [`@xenova/transformers`](https://github.com/xenova/transformers.js) running
-  `Xenova/all-MiniLM-L6-v2` (quantized) on CPU. No GPU, no API key, no network calls at query
-  time.
+- **Embeddings**: [`@huggingface/transformers`](https://github.com/huggingface/transformers.js)
+  running `Xenova/all-MiniLM-L6-v2` with int8-quantized weights on CPU. No GPU, no API key, no
+  network calls at query time.
 - **Vector store**: [`@lancedb/lancedb`](https://lancedb.github.io/lancedb/) — an embedded,
   file-backed vector database. No server process, no Docker.
 - **Interfaces**: a CLI and a stdio [MCP](https://modelcontextprotocol.io/) server, so any
@@ -33,13 +33,17 @@ for you. To try it without installing anything:
 npx @adborroto/semantic-search-mcp add ~/code/my-project
 ```
 
-> **First run downloads ~400MB of dependencies** (the ONNX runtime ships binaries for every
-> platform) plus a ~25MB embedding model, cached once. Subsequent runs are offline.
+> **Heads up on install size: ~950MB of dependencies**, plus a ~25MB embedding model
+> downloaded on first use. Almost all of it is native binaries you can't avoid at this layer —
+> `@lancedb/lancedb` (~430MB including its platform binary) and the ONNX runtime (~300MB, which
+> ships builds for every platform in one package). Both are cached once; everything after the
+> first run is offline.
 
 ## Requirements
 
 - Node.js **>= 22** (`node:sqlite`, used by the fallback backend, is only stable from 22).
-- ~25MB disk for the embedding model, plus roughly 1–3 KB per indexed chunk.
+- ~950MB disk for dependencies and ~25MB for the embedding model, plus roughly 1–3 KB per
+  indexed chunk.
 - No GPU, no external services, no database server.
 
 ## Why "RAG-lite"
@@ -60,8 +64,9 @@ semantic-search config                     # where config + index actually live
 ```
 
 `add` validates that each path is a real directory, resolves it to an absolute path, and skips
-duplicates (including the same directory reached through a symlink). `remove` stops future
-indexing of a folder; chunks already in the index stay until you reindex.
+duplicates (including the same directory reached through a symlink). `remove` also purges that
+folder's chunks from the index, so its content stops appearing in results — pass `--keep-index`
+if you want to drop it from the corpus but keep it searchable.
 
 ### Where things are stored
 
@@ -132,7 +137,8 @@ contain the literal query terms, and return the top `k`.
 ### Excluding files
 
 Indexing skips `node_modules/`, `.git/`, build output, and lockfiles by default, along with
-anything over 500KB. To exclude more, drop a gitignore-style `.indexignore` in either place:
+any file over 500,000 bytes. To exclude more, drop a gitignore-style `.indexignore` in either
+place:
 
 - **inside a folder you index** — patterns are relative to that folder, so a repo can exclude
   its own generated output;
@@ -303,7 +309,7 @@ scripts/index-all.sh   Batched indexing for very large corpora on constrained ho
 git clone https://github.com/adborroto/semantic-search-mcp.git
 cd semantic-search-mcp
 npm install
-npm test              # 62 tests, node:test
+npm test              # unit + end-to-end (node:test, no framework)
 npm run test:unit     # skip the slow end-to-end test
 npm run lint
 ```

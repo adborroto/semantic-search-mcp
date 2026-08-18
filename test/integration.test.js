@@ -88,6 +88,33 @@ test('index + search end to end', { skip, timeout: 600_000 }, async (t) => {
     assert.equal(summary.chunksWritten, 0);
   });
 
+  await t.test('removing a folder purges its chunks from the index', async () => {
+    // Regression: `index` only prunes under the root it walks, so a folder dropped
+    // from the config was never revisited and its chunks — verbatim text — kept
+    // surfacing in search results forever. `remove` now purges by default.
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-e2e-extra-'));
+    fs.writeFileSync(
+      path.join(extra, 'confidential.md'),
+      'The zorblatt migration schedule is internal and must not be shared.',
+    );
+
+    await run('add', extra);
+    await run('index');
+
+    const before = await run('search', 'zorblatt migration schedule', '-k', '3');
+    assert.ok(before.stdout.includes('confidential.md'), 'precondition: content is searchable');
+
+    await run('remove', extra);
+
+    const after = await run('search', 'zorblatt migration schedule', '-k', '3');
+    assert.ok(
+      !after.stdout.includes('confidential.md'),
+      `removed folder's content is still searchable:\n${after.stdout}`,
+    );
+
+    fs.rmSync(extra, { recursive: true, force: true });
+  });
+
   await t.test('state landed in SS_INDEX_DIR', async () => {
     // The complementary assertion — that the default index dir is never inside
     // the package directory — is covered in config.test.js without needing a run.

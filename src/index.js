@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
-import { runIndex } from './indexer.js';
+import { runIndex, purgeRoots } from './indexer.js';
 import { search } from './search.js';
 import { startMcpServer } from './mcp-server.js';
 import { config } from './config.js';
@@ -35,17 +35,28 @@ program
 program
   .command('remove <paths...>')
   .alias('rm')
-  .description('Remove folders from the corpus, by path or by folder name')
-  .action((paths) => {
+  .description('Remove folders from the corpus and purge their chunks from the index')
+  .option('--keep-index', 'leave already-indexed chunks in place', false)
+  .action(async (paths, opts) => {
     const { removed, notFound, roots } = removeRoots(paths);
 
     for (const p of removed) console.log(`removed   ${p}`);
     for (const p of notFound) console.error(`not configured: ${p}`);
 
+    if (removed.length && !opts.keepIndex) {
+      // Purge by default. `index` only prunes under the root it walks, so a folder
+      // dropped from the config is never revisited — its chunks (verbatim text)
+      // would otherwise keep turning up in search results indefinitely.
+      const { filesDeleted } = await purgeRoots(removed);
+      console.log(`purged    ${filesDeleted} file${filesDeleted === 1 ? '' : 's'} from the index`);
+    }
+
     if (removed.length) {
       console.log(`\n${roots.length} folder${roots.length === 1 ? '' : 's'} remaining`);
-      console.log('Note: this stops future indexing. Already-indexed chunks stay until you');
-      console.log('reindex or delete the index — see `semantic-search config` for its location.');
+      if (opts.keepIndex) {
+        console.log('Chunks left in place (--keep-index): this folder\'s content is still');
+        console.log('searchable. Re-run without --keep-index to purge it.');
+      }
     }
     if (notFound.length && !removed.length) process.exit(1);
   });
