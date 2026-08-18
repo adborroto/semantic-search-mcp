@@ -1,5 +1,11 @@
 # semantic-search-mcp
 
+[![CI](https://github.com/adborroto/semantic-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/adborroto/semantic-search-mcp/actions/workflows/ci.yml)
+[![Security](https://github.com/adborroto/semantic-search-mcp/actions/workflows/security.yml/badge.svg)](https://github.com/adborroto/semantic-search-mcp/actions/workflows/security.yml)
+[![npm](https://img.shields.io/npm/v/@adborroto/semantic-search-mcp)](https://www.npmjs.com/package/@adborroto/semantic-search-mcp)
+[![node](https://img.shields.io/node/v/@adborroto/semantic-search-mcp)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+
 A tiny, self-contained **RAG-lite retrieval engine**: it indexes files on disk and answers
 "what's semantically relevant to this query" — nothing more. It does **not** call an LLM and
 does **not** generate answers. It hands back the most relevant text chunks (file, line, score)
