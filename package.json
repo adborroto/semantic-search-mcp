@@ -47,7 +47,7 @@
     "url": "https://github.com/adborroto/semantic-search-mcp/issues"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.8.1",
+    "@huggingface/transformers": "^4.2.0",
     "@lancedb/lancedb": "^0.31.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^15.0.0",
