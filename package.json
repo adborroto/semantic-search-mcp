@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
-    "@lancedb/lancedb": "^0.31.0",
+    "@lancedb/lancedb": "^0.37.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^15.0.0",
     "ignore": "^7.0.6",
